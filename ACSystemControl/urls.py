@@ -8,6 +8,7 @@ urlpatterns = [
     path('checkout', ACSystem.checkout),
     path('checkDetail', ACSystem.checkDetail),
     path('update', ACSystem.update),
+    path('shutdown', ACSystem.shutdown),
     path('hibernate', ACSystem.hibernate),
     path('powerOff', ACSystem.powerOff),
 ]

@@ -14,14 +14,16 @@ def startup(request):
 
     返回码报错信息请查看 Response.py
     """
-    global server
+    global server, SETTING
 
     # executing result
     statusCode = 200
 
-    if server is not None:
-        statusCode = 401
-    else:
+    # 服务器只是关闭了
+    if server is not None and server.status == "off":
+        server.status = "on"
+    # 没有服务器
+    elif server is None:
         roomNum = request.GET.get('roomNum', default=None)
         instanceNum = request.GET.get('instanceNum', default=None)
         if roomNum is not None:
@@ -38,15 +40,84 @@ def startup(request):
 
         server = ACSystemServer.ACServer(SETTING)
         server.startup()
-        response = Response.RespondPack(statusCode)
-        return HttpResponse(json.dumps(dict(response)), content_type="application/json")
+    # 有服务器而且还开着
+    elif server is not None and server.status == "on":
+        statusCode = 401
+
+    response = Response.RespondPack(statusCode)
+    return HttpResponse(json.dumps(dict(response)), content_type="application/json")
+
+
+def shutdown(request):
+    """
+    关闭服务器，但是保留了服务器配置
+    :param request:
+    :return:
+    """
+    global server
+
+    statusCode = 200
+    server.status = "off"
+    response = Response.RespondPack(statusCode)
+    return HttpResponse(json.dumps(dict(response)), content_type="application/json")
+
+
+def destroy(request):
+    """
+    彻底关闭服务器，不保留服务器配置，下次需要重新初始化
+    :param request:
+    :return:
+    """
+    global server
+
+    statusCode = 200
+    del server
+    server = None
+    response = Response.RespondPack(statusCode)
+    return HttpResponse(json.dumps(dict(response)), content_type="application/json")
+
+
+def config(request):
+    """
+    更改服务器配置
+    :param request:
+    :return:
+    """
+    global server, SETTING
+
+    statusCode = 200
+    mode = request.GET.get("mode", default=None)
+    temperatureUpperBound = request.GET.get("ub", default=None)
+    temperatureLowerBound = request.GET.get("lb", default=None)
+
+    if mode == "cooling":
+        if temperatureLowerBound is not None:
+            SETTING.COOLING_WORK_TEMPERATURE_LOWERBOUND = temperatureLowerBound
+        if temperatureUpperBound is not None:
+            SETTING.COOLING_WORK_TEMPERATURE_UPPERBOUND = temperatureUpperBound
+
+        SETTING.WORK_TEMPERATURE_UPPERBOUND = SETTING.COOLING_WORK_TEMPERATURE_UPPERBOUND
+        SETTING.WORK_TEMPERATURE_LOWERBOUND = SETTING.COOLING_WORK_TEMPERATURE_LOWERBOUND
+
+    elif mode == "heating":
+        if temperatureLowerBound is not None:
+            SETTING.HEATING_WORK_TEMPERATURE_LOWERBOUND = temperatureLowerBound
+        if temperatureUpperBound is not None:
+            SETTING.HEATING_WORK_TEMPERATURE_UPPERBOUND = temperatureUpperBound
+
+        SETTING.WORK_TEMPERATURE_UPPERBOUND = SETTING.HEATING_WORK_TEMPERATURE_UPPERBOUND
+        SETTING.WORK_TEMPERATURE_LOWERBOUND = SETTING.HEATING_WORK_TEMPERATURE_LOWERBOUND
+
+    else:
+        statusCode = 410
+
+    response = Response.RespondPack(statusCode)
+    return HttpResponse(json.dumps(dict(response)), content_type="application/json")
 
 
 def register(request):
     """
     前台完成旅客登记
-
-    返回码报错信息请查看 Response.py
     :param request:
     :return:
     """
@@ -68,8 +139,6 @@ def register(request):
 def checkout(request):
     """
     前台办理用户退房手续
-
-    返回码报错信息请查看 Response.py
     :param request:
     :return:
     """
@@ -92,8 +161,6 @@ def checkout(request):
 def checkDetail(request):
     """
     前台查询用户使用详单
-
-    返回码报错信息请查看 Response.py
     :param request:
     :return:
     """
@@ -130,10 +197,8 @@ def update(request):
     invalid = False
     roomNumber = request.GET.get("roomNumber", default=None)
     # ct -> currentTemperature  tt -> targetTemperature
-    # cm -> currentMode         tm -> targetMode
     # cs -> currentSpeed        ts -> targetSpeed
     state = [request.GET.get("ct", default=None), request.GET.get("tt", default=None),
-             request.GET.get("cm", default=None), request.GET.get("tm", default=None),
              request.GET.get("cs", default=None), request.GET.get("ts", default=None)]
 
     for item in state:
@@ -150,8 +215,13 @@ def update(request):
     return HttpResponse(json.dumps(dict(response)), content_type="application/json")
 
 
-# TODO powerOff 函数 和 hibernate函数
+# TODO 业务逻辑 powerOff 函数 和 hibernate函数
 def powerOff(request):
+    """
+    关机请求
+    :param request:
+    :return:
+    """
     global server
     statusCode = 200
 

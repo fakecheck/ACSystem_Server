@@ -7,7 +7,7 @@ class RoomBindMapper:
     def __init__(self, num):
         """
         设想：房间数量小用list实现，房间数量大用dict实现
-        TODO 性能优化
+        TODO 性能优化 数量小使用list， 数量大使用dict
         :param num: 房间数量
         """
         self.upperBound = int(num)

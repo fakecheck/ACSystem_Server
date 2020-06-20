@@ -5,8 +5,6 @@ from datetime import datetime
 class AC(models.Model):
     roomNumber = models.IntegerField(primary_key=True)
     status = models.CharField(max_length=10)
-    currentMode = models.IntegerField()
-    targetMode = models.IntegerField()
     currentSpeed = models.IntegerField()
     targetSpeed = models.IntegerField()
     targetTemperature = models.FloatField()
@@ -20,8 +18,6 @@ class AC(models.Model):
     def init(self, roomNumber):
         self.roomNumber = int(roomNumber)
         self.status = "off"
-        self.currentMode = 0
-        self.targetMode = 0
         self.currentSpeed = 0
         self.targetSpeed = 0
         self.currentTemperature = 0
@@ -30,8 +26,6 @@ class AC(models.Model):
     def setAC(self, state):
         self.targetTemperature = state[0]
         self.currentTemperature = state[1]
-        self.currentMode = state[3]
-        self.targetMode = state[3]
         self.targetSpeed = state[4]
         self.currentSpeed = state[5]
 
@@ -52,6 +46,12 @@ class AC(models.Model):
         self.save()
 
     def isNewRequest(self, state):
+        """
+        根据用户端上传的目标温度和目标风速是否和数据库中的匹配判断是否是一个新的请求
+        :param state 请求
+        :return Boolean True 是新请求
+                        False 不是新请求
+        """
         if self.targetTemperature != state[1] or self.targetSpeed != state[5]:
             return True
         else:
@@ -59,29 +59,30 @@ class AC(models.Model):
 
     def update(self, state):
         """
-        update database with current Temperature and mode
+        用当前状态更新数据库
+        TODO 业务逻辑 亲爱的王延开，昨天你的屎山写到这了
         :param state:
         :return:
         """
 
-        modeModified = False
+        # 根据数据是否被改变产生相应的记录
         targetTemperatureModified = False
         targetSpeedModified = False
 
+        # 目标温度改变——>用户调温
         if self.targetTemperature != state[1]:
             targetTemperatureModified = True
-        if self.currentMode != state[3]:
-            modeModified = True
+        # 目标风速改变——>用户调风
         if self.targetSpeed != state[5]:
             targetSpeedModified = True
 
+        # 默认不修改所有的
+        # TODO 业务逻辑 完善注释
         new_mode = -1
         new_speed = -1
         new_targetTemperature = -1
         new_targetSpeed = -1
 
-        if modeModified:
-            new_mode = state[3]
         if targetSpeedModified:
             new_targetSpeed = state[5]
         if targetTemperatureModified:

@@ -17,6 +17,8 @@ class RespondPack(object):
             self.info = "room is empty"
         elif status == 415:
             self.info = "ID mismatch"
+        elif status == 416:
+            self.info = "Invalid request"
         elif status == 200:
             self.info = "OK"
 

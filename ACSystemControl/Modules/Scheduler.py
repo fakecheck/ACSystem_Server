@@ -62,7 +62,7 @@ class ServingInstance:
         self.number = number
         self.airRequest = None
         self.servingTimeStamp = None
-        # TODO 可以拓展服务对象的属性
+        # TODO 功能拓展 可以拓展服务对象的属性
 
     def serve(self, airRequest):
         """
@@ -314,7 +314,7 @@ class PriorityScheduler(threading.Thread, Scheduler):
             self.schedule()
 
     def cancel(self, roomNumber):
-        # TODO
+        # TODO 业务逻辑 取消服务函数
         pass
 
 

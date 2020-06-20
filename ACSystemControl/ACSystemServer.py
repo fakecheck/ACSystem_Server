@@ -6,15 +6,25 @@ from .Modules.StatManager import StatManager
 from .Modules.RoomBindMapper import RoomBindMapper
 from .Modules.ACBillingManager import ACBillingManager
 from .Modules.ACStateManager import ACStateManager
-from .Modules.Scheduler import ACAirRequest, PriorityScheduler, RoundScheduler
+from .Modules.Scheduler import ACAirRequest, PriorityScheduler, RoundScheduler, ServingCluster
 
 
 class DefaultSetting:
+    """
+    服务器的默认设置：
+    MODE    1 制冷    2 制热
+    INSTANCE_NUM 实例数量
+    AC_START_UP_TARGET_TEMPERATURE 开启空调时候的默认设置温度
+    AC_START_UP_SPEED 开启空调时候的默认风速
+    """
+    MODE = 1
     INSTANCE_NUM = 3
-    AC_START_UP_TEMPERATURE = 25
     AC_START_UP_TARGET_TEMPERATURE = 25
-    AC_START_UP_MODE = 1
-    AC_START_UP_SPEED = 1
+    AC_START_UP_SPEED = 2
+    COOLING_WORK_TEMPERATURE_UPPERBOUND = 25
+    COOLING_WORK_TEMPERATURE_LOWERBOUND = 18
+    HEATING_WORK_TEMPERATURE_UPPERBOUND = 30
+    HEATING_WORK_TEMPERATURE_LOWERBOUND = 25
 
 
 class Config:
@@ -36,6 +46,8 @@ class ACServer:
         self.priorityScheduler = None
         self.roundScheduler = None
 
+        # Serving Instance
+        self.cluster = None
         # Request Queue Resources
         self.RequestQueue = None
         self.RequestQueueLock = threading.Lock()
@@ -48,15 +60,23 @@ class ACServer:
         self.status = "off"
 
     def startup(self):
+        """
+        启动服务器，初始化相关模块
+        :return:
+        """
         self.status = "on"
 
+        # 初始化相关模块
         self.RoomBindMapper = RoomBindMapper(self.roomNum)
         self.ACStateManager = ACStateManager()
         self.ACBillingManager = ACBillingManager()
         self.StatManager = StatManager()
 
+        # 初始化调度器和服务对象
+        self.cluster = ServingCluster(self.SETTING.INSTANCE_NUM)
         self.RequestQueue = queue.Queue()
         self.priorityScheduler = PriorityScheduler(self.SETTING.INSTANCE_NUM,
+                                                   self.cluster,
                                                    self.RequestQueue,
                                                    self.RequestQueueLock,
                                                    self.RequestQueueNotEmptyEvent)
@@ -96,11 +116,12 @@ class ACServer:
             return status
 
         # 删除房间实例，并且将使用记录实例化
-        # TODO : 后续经理报表还需要统计用户修改的次数，
-        #  所以后面这个地方还要加上用户操作的统计
+        # TODO 业务逻辑 : 后续经理报表还需要统计用户修改的次数，
+        #  所以后面这个地方还要加上用户操作的统计以及相关的实例化
         try:
             _AC = models.AC.objects.get(roomNumber=roomNumber)
             records = models.Record.objects.filter(ac=_AC)
+            # 持久化
             with open('Usage.log', 'a+') as f:
                 for item in records:
                     record_file = item.toFile()
@@ -116,16 +137,17 @@ class ACServer:
         statusCode = self.RoomBindMapper.query(roomNumber, ID)
         if statusCode != 200:
             return statusCode, None
-        # TODO 详单生成
+        # TODO 业务逻辑 详单生成
         detail = self.ACBillingManager.query(roomNumber)
         return statusCode, detail
 
     def update(self, roomNumber, state):
         """
-        TODO 写注释
-        :param roomNumber:
-        :param state:
-        :return:
+        服务器更新根据客户端数据更新空调状态，根据调度情况构造返回值
+        :param roomNumber: 客户端房间号
+        :param state: 客户端房间状态
+        :return: statusCode     状态码
+                 speed          调度风速
         """
         statusCode = 200
         speed = 0
@@ -136,26 +158,28 @@ class ACServer:
             statusCode = 411
 
         if statusCode == 200:
+            # 判断客户端是否提出了新的请求
             if _AC.isNewRequest(state):
-                airRequest = ACAirRequest(roomNumber, state[1], state[5])
+                # 构造新的送风请求
+                airRequest = ACAirRequest(roomNumber, state[1], state[3])
+                if self.isValidRequest(airRequest):
+                    self.RequestQueueLock.acquire()
+                    # 目前没有请求， 那么还需要把调度器给打开
+                    if self.RequestQueue.qsize() == 0:
+                        self.RequestQueueNotEmptyEvent.set()
 
-                self.RequestQueueLock.acquire()
-                # 目前没有请求， 那么还需要把调度器给打开
-                if self.RequestQueue.qsize() == 0:
+                    # 把请求加入队列
                     self.RequestQueue.put(airRequest)
-                    self.RequestQueueNotEmptyEvent.set()
-                # 已经有请求了就直接加入队列
+                    self.RequestQueueLock.release()
                 else:
-                    self.RequestQueue.put(airRequest)
+                    del airRequest
+                    statusCode = 416
 
-                self.RequestQueueNotEmptyEvent.set()
-                self.RequestQueueLock.release()
-
-            # update database
+            # 使用客户端数据更新数据库
             _AC = models.AC.objects.get(roomNumber=roomNumber)
             _AC.update(state)
 
-            # update client current wind speed
+            # 从数据库获取调度之后的风速
             speed = _AC.currentSpeed
 
         return statusCode, speed
@@ -174,4 +198,10 @@ class ACServer:
 
     def hibernate(self, roomNumber):
         pass
+
+    def isValidRequest(self, airRequest):
+        if self.SETTING.WORK_TEMPERATURE_LOWERBOUND <= airRequest.targetTemperature <= self.SETTING.WORK_TEMPERATURE_UPPERBOUND:
+            return True
+        else:
+            return False
 
