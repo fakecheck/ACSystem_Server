@@ -6,7 +6,7 @@ from .Modules.StatManager import StatManager
 from .Modules.RoomBindMapper import RoomBindMapper
 from .Modules.ACBillingManager import ACBillingManager
 from .Modules.ACStateManager import ACStateManager
-from .Modules.Scheduler import ACAirRequest, PriorityScheduler, RoundScheduler, ServingCluster
+from .Modules.Scheduler import ACAirRequest, PriorityScheduler, RoundScheduler, ServingCluster, Request
 
 
 class DefaultSetting:
@@ -141,11 +141,12 @@ class ACServer:
         detail = self.ACBillingManager.query(roomNumber)
         return statusCode, detail
 
-    def update(self, roomNumber, state):
+    def update(self, roomNumber, state, status):
         """
         服务器更新根据客户端数据更新空调状态，根据调度情况构造返回值
         :param roomNumber: 客户端房间号
-        :param state: 客户端房间状态
+        :param state: 客户端房间参数
+        :param status: 客户房间状态
         :return: statusCode     状态码
                  speed          调度风速
         """
@@ -159,25 +160,47 @@ class ACServer:
 
         if statusCode == 200:
             # 判断客户端是否提出了新的请求
-            if _AC.isNewRequest(state):
-                # 构造新的送风请求
-                airRequest = ACAirRequest(roomNumber, state[1], state[3])
-                if self.isValidRequest(airRequest):
-                    self.RequestQueueLock.acquire()
-                    # 目前没有请求， 那么还需要把调度器给打开
-                    if self.RequestQueue.qsize() == 0:
-                        self.RequestQueueNotEmptyEvent.set()
+            _code = _AC.isNewRequest(state, status)
+            if _code != 4:
+                request = Request()
 
-                    # 把请求加入队列
-                    self.RequestQueue.put(airRequest)
-                    self.RequestQueueLock.release()
-                else:
-                    del airRequest
-                    statusCode = 416
+                # 关机
+                if _code == 0:
+                    request.setType("powerOff")
+                    request.setAirRequest(roomNumber)
+
+                # 休眠
+                elif _code == 2:
+                    request.setType("hibernate")
+                    request.setAirRequest(roomNumber)
+
+                # 调风调温/开机
+                elif _code == 3 or _code == 1:
+                    request.setType("on")
+
+                    # 构造新的送风请求
+                    airRequest = ACAirRequest(roomNumber, state[1], state[3])
+
+                    # 请求是否符合当前工作模式
+                    if self.isValidRequest(airRequest):
+                        request.setAirRequest(airRequest)
+                    # 不符合则删除请求，返回错误码
+                    else:
+                        del airRequest
+                        statusCode = 416
+
+                self.RequestQueueLock.acquire()
+                # 目前没有请求， 那么还需要把调度器给打开
+                if self.RequestQueue.qsize() == 0:
+                    self.RequestQueueNotEmptyEvent.set()
+
+                # 把请求加入队列
+                self.RequestQueue.put(request)
+                self.RequestQueueLock.release()
 
             # 使用客户端数据更新数据库
             _AC = models.AC.objects.get(roomNumber=roomNumber)
-            _AC.update(state)
+            _AC.update(state, status)
 
             # 从数据库获取调度之后的风速
             speed = _AC.currentSpeed

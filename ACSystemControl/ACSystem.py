@@ -196,6 +196,7 @@ def update(request):
 
     invalid = False
     roomNumber = request.GET.get("roomNumber", default=None)
+    status = request.GET.get("status", default=None)
     # ct -> currentTemperature  tt -> targetTemperature
     # cs -> currentSpeed        ts -> targetSpeed
     state = [request.GET.get("ct", default=None), request.GET.get("tt", default=None),
@@ -204,12 +205,12 @@ def update(request):
     for item in state:
         if item is None:
             invalid = True
-    if roomNumber is None or invalid:
+    if roomNumber is None or status is None or invalid:
         statusCode = 410
     elif server is None or server.status == "off":
         statusCode = 400
     else:
-        statusCode, speed = server.update(roomNumber, state)
+        statusCode, speed = server.update(roomNumber, state, status)
 
     response = Response.UpdateResponse(statusCode, speed)
     return HttpResponse(json.dumps(dict(response)), content_type="application/json")

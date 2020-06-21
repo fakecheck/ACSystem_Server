@@ -4,6 +4,25 @@ from datetime import datetime
 from ..models import AC, Record
 
 
+class Request:
+    """
+    请求对立中的请求
+    :arg type "on" 开机请求/送风请求
+              "powerOff" 关机请求
+              "hibernate" 休眠请求
+
+    """
+    def __init__(self):
+        self.airRequest = None
+        self.type = None
+
+    def setAirRequest(self, airRequest):
+        self.airRequest = airRequest
+
+    def setType(self, type):
+        self.type = type
+
+
 class ACAirRequest:
     """
     送风请求
@@ -13,6 +32,7 @@ class ACAirRequest:
     :param lastWaitStartTime 开始等待的时间
     :param waitingTime 总共等待的时间
     """
+
     def __init__(self, roomNumber, targetTemperature, targetSpeed):
         self.roomNumber = roomNumber
         self.targetTemperature = targetTemperature
@@ -29,8 +49,7 @@ class ACAirRequest:
         waitTime = None
 
         if self.waitingTime is None:
-            self.waitingTime = _current_time - self.lastWaitStartTime
-            waitTime = self.waitingTime
+            waitTime = _current_time - self.lastWaitStartTime
         else:
             waitTime = _current_time - self.lastWaitStartTime
             waitTime += self.waitingTime
@@ -107,7 +126,7 @@ class ServingCluster:
         airRequest.stopWaiting()
         self.runningInstance += 1
         for i in range(self.instanceNum):
-            if self.instances[i].airRequest is not None:
+            if self.instances[i].airRequest is None:
                 self.instances[i].serve(airRequest)
                 break
 
@@ -128,7 +147,7 @@ class ServingCluster:
     def finishServing(self, roomNumber):
         """
         完成了一个请求
-        （主要由取消触发，送风请求已经被满足，直接删除）
+        （主要由取消触发，送风请求已经被满足）
         :param roomNumber: 停止服务的房间号
         :return: airRequest 被满足的请求
         """
@@ -137,6 +156,7 @@ class ServingCluster:
         for idx, item in enumerate(self.instances):
             if item.airRequest.roomNumber == roomNumber:
                 airRequest = self.instances[idx].airRequest
+                self.instances[idx].airRequest = None
 
         return airRequest
 
@@ -165,13 +185,13 @@ class Scheduler:
     :param cluster 服务对象集群
     :param instanceNum 服务对象数量
     """
+    # 共有属性 三个队列
+    lowSpeedQueue = queue.Queue()
+    midSpeedQueue = queue.Queue()
+    highSpeedQueue = queue.Queue()
+
     def __init__(self, instanceNum, cluster):
         self.instanceNum = instanceNum
-
-        self.lowSpeedQueue = queue.Queue()
-        self.midSpeedQueue = queue.Queue()
-        self.highSpeedQueue = queue.Queue()
-
         self.cluster = cluster
 
 
@@ -246,7 +266,6 @@ class PriorityScheduler(threading.Thread, Scheduler):
         :param airRequest:
         :return:
         """
-        airRequest.startWaiting()
         if airRequest.targetSpeed == "1":
             self.lowSpeedQueue.put(airRequest)
         elif airRequest.targetSpeed == "2":
@@ -316,7 +335,6 @@ class PriorityScheduler(threading.Thread, Scheduler):
     def cancel(self, roomNumber):
         # TODO 业务逻辑 取消服务函数
         pass
-
 
 
 class RoundScheduler(Scheduler):
