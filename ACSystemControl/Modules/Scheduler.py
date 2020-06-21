@@ -1,4 +1,3 @@
-import queue
 import threading
 from datetime import datetime
 from ..models import AC, Record
@@ -46,7 +45,6 @@ class ACAirRequest:
         :return:
         """
         _current_time = datetime.now()
-        waitTime = None
 
         if self.waitingTime is None:
             waitTime = _current_time - self.lastWaitStartTime
@@ -70,6 +68,14 @@ class ACAirRequest:
         """
         self.waitingTime = datetime.now() - self.lastWaitStartTime
         self.lastWaitStartTime = None
+
+    def setWaitTime(self, waitTime):
+        """
+        设置已经等待的时长
+        :param waitTime:
+        :return:
+        """
+        self.waitingTime = waitTime
 
 
 class ServingInstance:
@@ -160,6 +166,12 @@ class ServingCluster:
 
         return airRequest
 
+    def updateRequest(self, newRequest):
+        for idx, item in enumerate(self.instances):
+            if item.airRequest.roomNumber == newRequest.roomNumber:
+                self.instances[idx].airRequest = newRequest
+                break
+
     def getServingStatus(self):
         """
         获取当前服务对象集群的服务状态简报
@@ -178,6 +190,11 @@ class ServingCluster:
 
         return servingSpeedList, servingTimeList
 
+    def getRoomNumbers(self):
+        _list = []
+        for item in self.instances:
+            _list.append(item.airRequest.roomNumber)
+        return _list
 
 class Scheduler:
     """
@@ -186,9 +203,9 @@ class Scheduler:
     :param instanceNum 服务对象数量
     """
     # 共有属性 三个队列
-    lowSpeedQueue = queue.Queue()
-    midSpeedQueue = queue.Queue()
-    highSpeedQueue = queue.Queue()
+    lowSpeedQueue = []
+    midSpeedQueue = []
+    highSpeedQueue = []
 
     def __init__(self, instanceNum, cluster):
         self.instanceNum = instanceNum
@@ -234,11 +251,11 @@ class PriorityScheduler(threading.Thread, Scheduler):
                     minServingSpeed = item
 
             maxWaitingSpeed = 0
-            if self.highSpeedQueue.qsize() > 0:
+            if len(self.highSpeedQueue) > 0:
                 maxWaitingSpeed = 3
-            elif self.midSpeedQueue.qsize() > 0:
+            elif len(self.midSpeedQueue) > 0:
                 maxWaitingSpeed = 2
-            elif self.lowSpeedQueue.qsize() > 0:
+            elif len(self.lowSpeedQueue) > 0:
                 maxWaitingSpeed = 1
 
             if minServingSpeed < maxWaitingSpeed:
@@ -252,12 +269,12 @@ class PriorityScheduler(threading.Thread, Scheduler):
         :return:  airRequest 优先级最高的请求
         """
         airRequest = None
-        if self.highSpeedQueue.qsize() > 0:
-            airRequest = self.highSpeedQueue.get()
-        elif self.midSpeedQueue.qsize() > 0:
-            airRequest = self.midSpeedQueue.get()
-        elif self.lowSpeedQueue.qsize() > 0:
-            airRequest = self.lowSpeedQueue.get()
+        if len(self.highSpeedQueue) > 0:
+            airRequest = self.highSpeedQueue.pop(0)
+        elif len(self.midSpeedQueue) > 0:
+            airRequest = self.midSpeedQueue.pop(0)
+        elif len(self.lowSpeedQueue) > 0:
+            airRequest = self.lowSpeedQueue.pop(0)
         return airRequest
 
     def putRequest(self, airRequest):
@@ -266,12 +283,16 @@ class PriorityScheduler(threading.Thread, Scheduler):
         :param airRequest:
         :return:
         """
+        # 请求开始等待
+        airRequest.startWaiting()
+
+        # 放入相应队列
         if airRequest.targetSpeed == "1":
-            self.lowSpeedQueue.put(airRequest)
+            self.lowSpeedQueue.append(airRequest)
         elif airRequest.targetSpeed == "2":
-            self.midSpeedQueue.put(airRequest)
+            self.midSpeedQueue.append(airRequest)
         elif airRequest.targetSpeed == "3":
-            self.highSpeedQueue.put(airRequest)
+            self.highSpeedQueue.append(airRequest)
 
     def schedule(self):
         """
@@ -319,22 +340,126 @@ class PriorityScheduler(threading.Thread, Scheduler):
         """
         while True:
             # 如果 队列中没有请求的话，就挂起，避免一直占用锁资源（拿了放， 放了拿）
-            if self.requestQueue.qsize() == 0:
+            if len(self.requestQueue) == 0:
                 self.event.wait()
                 if self.event.isSet():
                     self.event.clear()
 
             # 处理请求
             self.lock.acquire()
-            airRequest = self.requestQueue.get()
+            request = self.requestQueue.pop(0)
             self.lock.release()
 
-            self.putRequest(airRequest)
+            # 如果是关机，或者休眠，直接取消送风请求
+            if request.type == "off" or request.type == "hibernate":
+                waitTime = self.cancel(request.airRequest)
+                waitTime = waitTime.seconds/60
+                _AC = AC.objects.get(roomNumber=request.airRequest)
+                _AC.addWaitTime(waitTime)
+                _AC.save()
+
+            else:
+                # 判断该房间是否有请求在队列中
+                _request, serving = self.findRequest(request.airRequest.roomNumber)
+                # 该房间没有请求在队列中/服务中
+                if _request is None:
+                    # 构造新请求，放入队列
+                    airRequest = request.airRequest
+                    self.putRequest(airRequest)
+                # 该房间有请求在队列中，正在等待，或者正在送风
+                else:
+                    self.updateRequest(_request, request, serving)
+
+            # 调度
             self.schedule()
 
+    def updateRequest(self, oldRequest, newRequest, serving):
+        """
+        更新请求
+        如果被更新的请求正在被服务，直接更新请求即可
+        如果被更新的请求正在等待，如果新请求没有更改风速，则不改变请求位置（不需要重新排队），只修改风速
+                            如果新请求更改了风速，则需要对更改了风速的请求重新排队
+        :param oldRequest:  旧请求
+        :param newRequest:  新请求
+        :param serving:     旧的请求是否正在被服务
+        :return:
+        """
+        if serving:
+            self.cluster.updateRequest(newRequest)
+        else:
+            # 只是调温，没有改变风速
+            if oldRequest.targetSpeed == newRequest.targetSpeed:
+                if oldRequest.targetSpeed == 1:
+                    # 低风
+                    for idx, item in enumerate(self.lowSpeedQueue):
+                        if item.roomNumber == oldRequest.roomNumber:
+                            self.lowSpeedQueue[idx] = newRequest
+                elif oldRequest.targetSpeed == 2:
+                    # 中风
+                    for idx, item in enumerate(self.midSpeedQueue):
+                        if item.roomNumber == oldRequest.roomNumber:
+                            self.midSpeedQueue[idx] = newRequest
+                elif oldRequest.targetSpeed == 3:
+                    # 高风
+                    for idx, item in enumerate(self.highSpeedQueue):
+                        if item.roomNumber == oldRequest.roomNumber:
+                            self.highSpeedQueue[idx] = newRequest
+            # 改变了风速
+            else:
+                waitTime = self.cancel(oldRequest.roomNumber)
+                newRequest.setWaitTime(waitTime)
+                self.putRequest(newRequest)
+
+    def findRequest(self, roomNumber):
+        """
+        查询送风请求
+        :param roomNumber: 房间号
+        :return: request    查找到的请求
+                 serving    是否正在服务
+        """
+        request = None
+        serving = False
+        for item in self.lowSpeedQueue:
+            if item.roomNumber == roomNumber:
+                request = item
+        for item in self.midSpeedQueue:
+            if item.roomNumber == roomNumber:
+                request = item
+        for item in self.highSpeedQueue:
+            if item.roomNumber == roomNumber:
+                request = item
+        for item in self.cluster.getRoomNumbers:
+            if item.roomNumber == roomNumber:
+                request = item
+                serving = True
+        return request, serving
+
     def cancel(self, roomNumber):
-        # TODO 业务逻辑 取消服务函数
-        pass
+        """
+        取消请求
+        :param roomNumber: 取消请求的房间号
+        :return: 被取消的请求总共的等待时长
+        """
+        request = None
+        for idx, item in enumerate(self.lowSpeedQueue):
+            if item.roomNumber == roomNumber:
+                request = self.lowSpeedQueue[idx]
+                self.lowSpeedQueue[idx] = None
+        for idx, item in enumerate(self.midSpeedQueue):
+            if item.roomNumber == roomNumber:
+                request = self.midSpeedQueue[idx]
+                self.midSpeedQueue[idx] = None
+        for idx, item in enumerate(self.highSpeedQueue):
+            if item.roomNumber == roomNumber:
+                request = self.highSpeedQueue[idx]
+                self.highSpeedQueue[idx] = None
+
+        _request = self.cluster.finishServing(roomNumber)
+        if _request is not None:
+            request = _request
+
+        request.stopWaiting()
+        return request.getWaitTime()
 
 
 class RoundScheduler(Scheduler):

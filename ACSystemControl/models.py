@@ -9,6 +9,7 @@ class AC(models.Model):
     targetSpeed = models.IntegerField()
     targetTemperature = models.FloatField()
     currentTemperature = models.FloatField()
+    waitTime = models.FloatField()
 
     def __str__(self):
         return str(self.roomNumber) + \
@@ -22,6 +23,10 @@ class AC(models.Model):
         self.targetSpeed = 0
         self.currentTemperature = 0
         self.targetTemperature = 0
+        self.waitTime = 0
+
+    def addWaitTime(self, waitTime):
+        self.waitTime += waitTime
 
     def stopServing(self):
         _record = Record()
